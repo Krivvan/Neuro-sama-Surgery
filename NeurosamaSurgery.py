@@ -7,6 +7,7 @@ import os, sys
 import numpy as np
 import json
 import threading
+import queue
 
 try:
     import websocket
@@ -33,6 +34,14 @@ class NeuroWebSocketHandler(qt.QObject): # type: ignore
         self.wsThread = None
         self.isRunning = False
         self.url = None
+        
+        # Thread-safe queue for cross-thread communication
+        self.eventQueue = queue.Queue()
+        
+        # Timer to process events from websocket thread in main thread
+        self.eventTimer = qt.QTimer()
+        self.eventTimer.timeout.connect(self._processEventQueue)
+        self.eventTimer.start(10)  # Process events every 10ms
     
     def connect(self, url):
         """Connect to the WebSocket server"""
@@ -81,10 +90,37 @@ class NeuroWebSocketHandler(qt.QObject): # type: ignore
             print(f"WebSocket thread error: {e}")
             self.error.emit(str(e))
     
+    def _processEventQueue(self):
+        """Process events from the websocket thread (runs in main thread via QTimer)"""
+        try:
+            while True:
+                # Non-blocking get - process all available events
+                eventType, eventData = self.eventQueue.get_nowait()
+                
+                if eventType == "connected":
+                    self.connected.emit()
+                elif eventType == "disconnected":
+                    self.disconnected.emit()
+                elif eventType == "error":
+                    self.error.emit(eventData)
+                elif eventType == "message":
+                    self.messageReceived.emit(eventData)
+                elif eventType == "action":
+                    actionId, actionName, actionParams = eventData
+                    self.actionReceived.emit(actionId, actionName, actionParams)
+                elif eventType == "messageSent":
+                    command, data = eventData
+                    self.messageSent.emit(command, data)
+                    
+        except queue.Empty:
+            # No more events to process
+            pass
+    
     def _onOpen(self, ws):
         """Called when WebSocket connection is established"""
         print("WebSocket connected")
-        self.connected.emit()
+        # Queue event for main thread processing
+        self.eventQueue.put(("connected", None))
         
         # Send startup message
         self.sendStartup()
@@ -92,13 +128,15 @@ class NeuroWebSocketHandler(qt.QObject): # type: ignore
     def _onClose(self, ws, close_status_code, close_msg):
         """Called when WebSocket connection is closed"""
         print("WebSocket disconnected")
-        self.disconnected.emit()
+        # Queue event for main thread processing
+        self.eventQueue.put(("disconnected", None))
     
     def _onError(self, ws, error):
         """Called when WebSocket encounters an error"""
         errorString = str(error)
         print(f"WebSocket error: {errorString}")
-        self.error.emit(errorString)
+        # Queue event for main thread processing
+        self.eventQueue.put(("error", errorString))
     
     def _onMessage(self, ws, message):
         """Called when a message is received from the WebSocket"""
@@ -107,7 +145,8 @@ class NeuroWebSocketHandler(qt.QObject): # type: ignore
             command = data.get("command")
             #print(f"Received message: {command}")
             
-            self.messageReceived.emit(data)
+            # Queue event for main thread processing
+            self.eventQueue.put(("message", data))
             
             # Handle incoming messages based on command
             if command == "action":
@@ -117,6 +156,11 @@ class NeuroWebSocketHandler(qt.QObject): # type: ignore
                 
         except json.JSONDecodeError as e:
             print(f"Failed to parse WebSocket message: {e}")
+    
+    @qt.Slot(str, object)
+    def _emitMessageSent(self, command, data):
+        """Slot to emit messageSent signal in main thread"""
+        self.messageSent.emit(command, data)
     
     
     def _sendMessage(self, command, data=None):
@@ -145,8 +189,8 @@ class NeuroWebSocketHandler(qt.QObject): # type: ignore
             self.ws.send(messageJson)
             print(f"Sent message: {command}")
             
-            # Emit signal for logging
-            self.messageSent.emit(command, data)
+            # Queue event for main thread processing
+            self.eventQueue.put(("messageSent", (command, data)))
         except Exception as e:
             print(f"Failed to send message: {e}")
     
@@ -205,7 +249,8 @@ class NeuroWebSocketHandler(qt.QObject): # type: ignore
         actionParams = actionData.get("data")
         
         #print(f"Action received: {actionName} (id: {actionId})")
-        self.actionReceived.emit(actionId, actionName, actionParams if actionParams else "")
+        # Queue event for main thread processing
+        self.eventQueue.put(("action", (actionId, actionName, actionParams if actionParams else "")))
 
 
 class NeurosamaSurgery(ScriptedLoadableModule): # type: ignore
@@ -458,9 +503,6 @@ class NeurosamaSurgeryWidget(ScriptedLoadableModuleWidget): # type: ignore
         
         procedureName = self.procedureComboBox.currentText
         self.currentProcedure = procedureName
-        
-        if self.currentProcedure:
-            print(f"Selected procedure: {self.currentProcedure}")
     
     def onLoadProcedure(self):
         """Load the selected procedure and populate its UI"""
