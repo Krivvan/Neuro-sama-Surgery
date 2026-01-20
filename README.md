@@ -12,7 +12,7 @@ Further integration of robotic devices with 3D Slicer to conduct virtual in addi
 
 ## Installation
 
-Download and install [3D Slicer](https://slicer.org) (tested on 5.10.0). Clone repository. Add module directory to 3D Slicer via Edit -> Application Settings -> Modules. Specific procedures may require scenes (not uploaded as of yet).
+Download and install [3D Slicer](https://slicer.org) (tested on 5.10.0). Clone repository. Add module directory to 3D Slicer via Edit -> Application Settings -> Modules. Specific procedures may require scenes.
 
 ## License
 
